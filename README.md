@@ -27,7 +27,7 @@ sign in/
 ## 环境要求
 
 - Windows 10/11
-- Python 3.12（`C:\Users\14976\AppData\Local\Programs\Python\Python312\pythonw.exe`）
+- Python 3.12（[python.org 下载](https://www.python.org/downloads/)）
 - Node.js（供 `cdp.mjs` 使用，用于 WorkBuddy / TRAE 的 CDP 控制）
 - 四个客户端已安装（路径见上表）
 
