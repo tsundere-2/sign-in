@@ -1,0 +1,6 @@
+# 运行期生成，勿提交
+__pycache__/
+*.pyc
+state.json
+logs/
+.workbuddy/
