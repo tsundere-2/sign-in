@@ -18,6 +18,7 @@ import re
 import subprocess
 import sys
 import time
+import urllib.request
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 LOGDIR = os.path.join(BASE, "logs")
@@ -59,6 +60,38 @@ def save_state(state):
 
 def today():
     return dt.date.today().strftime("%Y-%m-%d")
+
+
+SUCCESS_KEYS = ("raccoon=", "workbuddy=", "trae=", "qoder=")
+
+
+def run_succeeded_today():
+    """今天是否已经完整地成功运行过一次（四平台全完成，无失败、无 skip）。
+
+    以 state.json 的 last_success 为主；若状态文件缺失，回退解析当日日志里
+    「本次完成：… 失败 0」且四个平台全部出现在结果中的记录。
+    """
+    st = load_state()
+    if st.get("last_success") == today():
+        return True
+    logpath = os.path.join(LOGDIR, "checkin.log")
+    if not os.path.isfile(logpath):
+        return False
+    day = today()
+    try:
+        with open(logpath, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                if not line.startswith(day + " "):
+                    continue
+                if "本次完成" not in line:
+                    continue
+                if "失败 0" not in line or "=skip" in line:
+                    continue
+                if all(k in line for k in SUCCESS_KEYS):
+                    return True
+    except Exception:
+        pass
+    return False
 
 
 # ---------------------------------------------------------------- Win32 基础
@@ -153,7 +186,6 @@ def wait_process(substr, timeout=60, interval=1.0):
 
 
 def wait_port(port, timeout=60, interval=1.0):
-    import urllib.request
     end = time.time() + timeout
     while time.time() < end:
         try:
@@ -161,6 +193,44 @@ def wait_port(port, timeout=60, interval=1.0):
             return True
         except Exception:
             time.sleep(interval)
+    return False
+
+
+# ---------------------------------------------------------------- 网络检测
+
+def network_ok(timeout=4):
+    """真正发起 HTTP(S) 请求并校验响应内容，确认网络确实可用（而非仅 TCP 连通）。"""
+    probes = [
+        # 微软官方连通性探测文本，返回 200 且正文为固定内容才算可用
+        ("http://www.msftconnecttest.com/connecttest.txt", b"Microsoft Connect Test"),
+        # 国内可达站点，返回 200 即算可用
+        ("https://www.baidu.com/", None),
+        ("https://www.qq.com/", None),
+    ]
+    for url, expect in probes:
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                body = r.read(1024)
+                if r.status == 200 and (expect is None or expect in body):
+                    return True
+        except Exception:
+            continue
+    return False
+
+
+def wait_network(timeout=180, interval=5):
+    """轮询等待可用网络（登录/睡眠唤醒后网络可能尚未就绪），超时返回 False。"""
+    if network_ok():
+        return True
+    log("网络不可用，等待网络连接…")
+    end = time.time() + timeout
+    while time.time() < end:
+        time.sleep(interval)
+        if network_ok():
+            log("网络已可用")
+            return True
+    log(f"等待 {timeout}s 后仍无可用网络")
     return False
 
 
@@ -536,14 +606,22 @@ def do_trae(force):
             time.sleep(1)
 
 
-def qoder_campaign_status():
-    """读取今日 Qoder 领取状态：claimed / claimable / none / unknown。"""
+def qoder_campaign_events():
+    """提取今日全部 Campaign 日志事件，返回 [(local_dt, kind, bool)]（按时间升序）。
+
+    kind 取值：'status'（通知状态已更新 hasClaimableCampaign）或 'surface'（活动 Surface 已打开 claimable）。
+    0.5.6 起领取成功信号 = 出现过 true 之后最终 hasClaimableCampaign 翻转为 false。
+    """
     logs_dir = os.path.join(os.environ.get("APPDATA", ""), "com.qodercn.app.stable", "logs")
     if not os.path.isdir(logs_dir):
-        return "unknown"
+        return []
     today_local = dt.date.today()
-    pat = re.compile(r"\[(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}:\d{2}\.\d+)Z\].*hasClaimableCampaign\":(true|false)")
-    statuses = []
+    ts = r"\[(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}:\d{2}(?:\.\d+)?)Z\]"
+    pats = {
+        "status": re.compile(ts + r".*通知状态已更新.*\"hasClaimableCampaign\":(true|false)"),
+        "surface": re.compile(ts + r".*活动 Surface 已打开.*\"claimable\":(true|false)"),
+    }
+    events = []
     for root, _dirs, files in os.walk(logs_dir):
         for fn in files:
             if fn != "main.log":
@@ -552,26 +630,49 @@ def qoder_campaign_status():
             try:
                 with open(p, "r", encoding="utf-8", errors="replace") as f:
                     for line in f:
-                        m = pat.search(line)
-                        if not m:
-                            continue
-                        d = dt.datetime.strptime(m.group(1), "%Y-%m-%d").date()
-                        t = dt.datetime.strptime(m.group(2), "%H:%M:%S.%f").time()
-                        local_dt = dt.datetime.combine(d, t) + dt.timedelta(hours=8)
-                        if local_dt.date() == today_local:
-                            statuses.append((local_dt, m.group(3) == "true"))
+                        for kind, pat in pats.items():
+                            m = pat.search(line)
+                            if not m:
+                                continue
+                            d = dt.datetime.strptime(m.group(1), "%Y-%m-%d").date()
+                            tstr = m.group(2)
+                            t = (dt.datetime.strptime(tstr, "%H:%M:%S.%f").time()
+                                 if "." in tstr else dt.datetime.strptime(tstr, "%H:%M:%S").time())
+                            local_dt = dt.datetime.combine(d, t) + dt.timedelta(hours=8)
+                            if local_dt.date() == today_local:
+                                events.append((local_dt, kind, m.group(3) == "true"))
+                            break
             except Exception:
                 continue
-    if not statuses:
+    events.sort()
+    return events
+
+
+def qoder_campaign_status():
+    """读取今日 Qoder 领取状态：claimed / claimable / none / unknown。"""
+    events = qoder_campaign_events()
+    if not events:
         return "none"
-    statuses.sort()
-    latest_true = statuses[-1][1]
-    saw_true = any(s for _, s in statuses)
-    if latest_true is False and saw_true:
-        return "claimed"
-    if latest_true is True:
+    saw_true = any(v for _, _, v in events)
+    last_status = None
+    for _, kind, v in events:
+        if kind == "status":
+            last_status = v
+    if saw_true:
+        if last_status is False:
+            return "claimed"
         return "claimable"
+    # 今日只有 false 记录：10:00 窗口已开却一直不可领取，视为已领取；
+    # 10:00 前则视为暂无（交由 hour<10 逻辑跳过）。
+    if dt.datetime.now().hour >= 10:
+        return "claimed"
     return "none"
+
+
+def qoder_latest_surface():
+    """今日最近一次「活动 Surface 已打开」事件，返回 (local_dt, claimable_bool) 或 None。"""
+    evs = [e for e in qoder_campaign_events() if e[1] == "surface"]
+    return (evs[-1][0], evs[-1][2]) if evs else None
 
 
 def qoder_exe():
@@ -602,7 +703,7 @@ def do_qoder(force):
 
     status = qoder_campaign_status()
     if not force and status == "claimed":
-        log("[Qoder CN] 日志显示今日已领取（hasClaimableCampaign true→false），跳过")
+        log("[Qoder CN] 日志显示今日已领取（claimable true→false / 全 false），跳过")
         st[key] = today()
         save_state(st)
         return "already"
@@ -640,17 +741,34 @@ def do_qoder(force):
     hwnd, rect = win
     restore(hwnd)
 
-    if status == "none" and not force:
-        log("[Qoder CN] 今日日志无领取记录（可能未到 10:00 或刚启动），仍尝试点击")
-
     # 1) 左下角账号/设置入口 -> 打开菜单
     click_ratio(hwnd, 0.0999, 0.9777)
     time.sleep(1.5)
     # 2) 菜单内「权益中心」
+    before = qoder_latest_surface()
+    before_dt = before[0] if before else None
     click_ratio(hwnd, 0.0475, 0.6315)
-    time.sleep(4.0)  # 等 campaign surface 加载
 
-    # 3) 定位黑色「领取」按钮：先按比例裁一块找深色连通域，找不到则用固定比例兜底
+    # 3) 等待权益中心 surface 真正打开，并读取其 claimable 状态（比固定 sleep 可靠）
+    claimable = None
+    end = time.time() + 20
+    while time.time() < end:
+        latest = qoder_latest_surface()
+        if latest and (before_dt is None or latest[0] > before_dt):
+            claimable = latest[1]
+            break
+        time.sleep(1)
+
+    if claimable is False:
+        log("[Qoder CN] 权益中心显示今日已领取（claimable=false），跳过")
+        st[key] = today()
+        save_state(st)
+        return "already"
+
+    if claimable is None:
+        log("[Qoder CN] 20 秒内未检测到权益中心 surface 打开，仍尝试像素定位领取")
+
+    # 4) 定位黑色「领取」按钮：先按比例裁一块找深色连通域，找不到则用固定比例兜底
     w = rect.right - rect.left
     h = rect.bottom - rect.top
     cx = int(w * 0.6557)
@@ -680,17 +798,17 @@ def do_qoder(force):
         click_ratio(hwnd, 0.6557, 0.5672)
         log("[Qoder CN] 用固定比例点击领取按钮")
 
-    # 4) 轮询日志确认 true->false
-    end = time.time() + 15
+    # 5) 轮询日志确认 claimable true→false（领取成功）
+    end = time.time() + 20
     while time.time() < end:
         if qoder_campaign_status() == "claimed":
-            log("[Qoder CN] 领取成功（hasClaimableCampaign true→false）")
+            log("[Qoder CN] 领取成功（claimable true→false）")
             st[key] = today()
             save_state(st)
             return "claimed"
         time.sleep(1.5)
 
-    log("[Qoder CN] 15 秒内未确认到领取成功")
+    log("[Qoder CN] 20 秒内未确认到领取成功")
     return "failed"
 
 
@@ -710,6 +828,14 @@ def main():
 
     names = [args.only] if args.only else list(PLATFORMS)
     log("=" * 60)
+    if not args.force and run_succeeded_today():
+        log("今日已完整签到成功（状态/日志均有记录），不再重复运行")
+        log("=" * 60)
+        return 0
+    if not wait_network():
+        log(f"无可用网络，本次签到跳过：{', '.join(names)}")
+        log("=" * 60)
+        return 0
     log(f"开始签到：{', '.join(names)}  force={args.force}")
     results = {}
     for name in names:
@@ -720,8 +846,14 @@ def main():
             results[name] = "failed"
     ok = sum(1 for v in results.values() if v in ("claimed", "already", "skip"))
     fail = sum(1 for v in results.values() if v == "failed")
+    skip = sum(1 for v in results.values() if v == "skip")
     log(f"本次完成：成功/已签 {ok}，失败 {fail}  " +
         " ".join(f"{k}={v}" for k, v in results.items()))
+    if args.only is None and fail == 0 and skip == 0:
+        st = load_state()
+        st["last_success"] = today()
+        save_state(st)
+        log("今日全部平台签到完成，已记录成功标记")
     log("=" * 60)
     return 0 if fail == 0 else 1
 

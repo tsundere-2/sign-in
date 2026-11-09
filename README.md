@@ -71,7 +71,9 @@ Unregister-ScheduledTask -TaskName "QiandaoAutoCheckin" -Confirm:$false
 
 ## 运行逻辑
 
-- **状态记录**：`state.json` 按平台记录「最近一次成功签到」的日期（`YYYY-MM-DD`），当天已完成则直接跳过。
+- **启动前自检**：程序先判断「今天是否已完整签到成功」（读 `state.json` 的 `last_success` + 当日日志中 `本次完成：… 失败 0` 且四平台齐全的记录），若是则直接退出，不再重复运行。
+- **可用网络校验**：不以「已连网」为凭，而是发起真实 HTTP(S) 请求并校验响应（微软连通性探测文本 / baidu / qq 返回 200），确认网络确实可用后才开始签到；否则轮询等待（最多 180 秒）。
+- **状态记录**：`state.json` 按平台记录「最近一次成功签到」的日期（`YYYY-MM-DD`），每个平台动手前都会先确认当天是否已签，已签则直接跳过。
 - **WorkBuddy**：除 `state.json` 外，还会扫描 `~/.workbuddy/logs/<日期>/*.log` 中的 `daily-checkin` 请求记录，避免「点击成功但按钮未消失」的误判。
 - **Qoder CN**：除 `state.json` 外，还会扫描 `%APPDATA%\com.qodercn.app.stable\logs\*\main.log` 中的 `hasClaimableCampaign` 状态，以日志翻转为准确认领取成功。
 - **失败即退出**：每个平台独立 try/finally，启动的客户端在结束后清理，不残留进程。
