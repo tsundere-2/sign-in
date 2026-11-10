@@ -739,6 +739,25 @@ def do_qoder(force):
             return "failed"
 
     hwnd, rect = win
+
+    # 检测是否还有可领取的福利活动渠道：Qoder 启动后会写入「通知状态已更新
+    # (hasClaimableCampaign)」，以此为准；若无任何渠道则直接退出，取消后续点击操作。
+    if qoder_campaign_status() == "none":
+        log("[Qoder CN] 等待客户端上报福利活动渠道状态…")
+        end = time.time() + 60
+        while time.time() < end:
+            if qoder_campaign_status() != "none":
+                break
+            time.sleep(2)
+    status = qoder_campaign_status()
+    if status == "claimed":
+        log("[Qoder CN] 无福利活动渠道（hasClaimableCampaign=false），取消操作")
+        st[key] = today()
+        save_state(st)
+        return "already"
+    if status == "none":
+        log("[Qoder CN] 未获取到福利渠道信号，仍尝试打开权益中心")
+
     restore(hwnd)
 
     # 1) 左下角账号/设置入口 -> 打开菜单

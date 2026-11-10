@@ -75,7 +75,7 @@ Unregister-ScheduledTask -TaskName "QiandaoAutoCheckin" -Confirm:$false
 - **可用网络校验**：不以「已连网」为凭，而是发起真实 HTTP(S) 请求并校验响应（微软连通性探测文本 / baidu / qq 返回 200），确认网络确实可用后才开始签到；否则轮询等待（最多 180 秒）。
 - **状态记录**：`state.json` 按平台记录「最近一次成功签到」的日期（`YYYY-MM-DD`），每个平台动手前都会先确认当天是否已签，已签则直接跳过。
 - **WorkBuddy**：除 `state.json` 外，还会扫描 `~/.workbuddy/logs/<日期>/*.log` 中的 `daily-checkin` 请求记录，避免「点击成功但按钮未消失」的误判。
-- **Qoder CN**：除 `state.json` 外，还会扫描 `%APPDATA%\com.qodercn.app.stable\logs\*\main.log` 中的 `hasClaimableCampaign` 状态，以日志翻转为准确认领取成功。
+- **Qoder CN**：除 `state.json` 外，还会扫描 `%APPDATA%\com.qodercn.app.stable\logs\*\main.log` 中的 `[Campaign]` 日志——`hasClaimableCampaign`（是否还有可领取的福利渠道）与 `claimable`（活动 Surface 打开时是否可领）。启动后会先等客户端上报渠道状态：**无任何可领取渠道则直接退出取消操作**；有渠道才打开权益中心点击「领取」，并以日志翻转为准确认成功。
 - **失败即退出**：每个平台独立 try/finally，启动的客户端在结束后清理，不残留进程。
 
 ## 关键实现说明
