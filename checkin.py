@@ -609,8 +609,8 @@ def do_trae(force):
 def qoder_campaign_events():
     """提取今日全部 Campaign 日志事件，返回 [(local_dt, kind, bool)]（按时间升序）。
 
-    kind 取值：'status'（通知状态已更新 hasClaimableCampaign）或 'surface'（活动 Surface 已打开 claimable）。
-    0.5.6 起领取成功信号 = 出现过 true 之后最终 hasClaimableCampaign 翻转为 false。
+    kind 取值：'status'（通知状态已更新 hasClaimableCampaign）、'surface'（活动 Surface 已打开 claimable）、
+    'loaded'（活动 Surface 加载完成）。0.5.6 起领取成功信号 = 出现过 true 之后最终 hasClaimableCampaign 翻转为 false。
     """
     logs_dir = os.path.join(os.environ.get("APPDATA", ""), "com.qodercn.app.stable", "logs")
     if not os.path.isdir(logs_dir):
@@ -620,6 +620,7 @@ def qoder_campaign_events():
     pats = {
         "status": re.compile(ts + r".*通知状态已更新.*\"hasClaimableCampaign\":(true|false)"),
         "surface": re.compile(ts + r".*活动 Surface 已打开.*\"claimable\":(true|false)"),
+        "loaded": re.compile(ts + r".*活动 Surface 加载完成.*\"result\":\"loaded\""),
     }
     events = []
     for root, _dirs, files in os.walk(logs_dir):
@@ -640,7 +641,8 @@ def qoder_campaign_events():
                                  if "." in tstr else dt.datetime.strptime(tstr, "%H:%M:%S").time())
                             local_dt = dt.datetime.combine(d, t) + dt.timedelta(hours=8)
                             if local_dt.date() == today_local:
-                                events.append((local_dt, kind, m.group(3) == "true"))
+                                val = True if kind == "loaded" else (m.group(3) == "true")
+                                events.append((local_dt, kind, val))
                             break
             except Exception:
                 continue
@@ -650,7 +652,7 @@ def qoder_campaign_events():
 
 def qoder_campaign_status():
     """读取今日 Qoder 领取状态：claimed / claimable / none / unknown。"""
-    events = qoder_campaign_events()
+    events = [e for e in qoder_campaign_events() if e[1] in ("status", "surface")]
     if not events:
         return "none"
     saw_true = any(v for _, _, v in events)
@@ -673,6 +675,12 @@ def qoder_latest_surface():
     """今日最近一次「活动 Surface 已打开」事件，返回 (local_dt, claimable_bool) 或 None。"""
     evs = [e for e in qoder_campaign_events() if e[1] == "surface"]
     return (evs[-1][0], evs[-1][2]) if evs else None
+
+
+def qoder_latest_loaded():
+    """今日最近一次「活动 Surface 加载完成」事件时间（local_dt），无则 None。"""
+    evs = [e for e in qoder_campaign_events() if e[1] == "loaded"]
+    return evs[-1][0] if evs else None
 
 
 def qoder_exe():
@@ -787,7 +795,17 @@ def do_qoder(force):
     if claimable is None:
         log("[Qoder CN] 20 秒内未检测到权益中心 surface 打开，仍尝试像素定位领取")
 
-    # 4) 定位黑色「领取」按钮：先按比例裁一块找深色连通域，找不到则用固定比例兜底
+    # 4) 等待 surface 真正加载完成（「已打开」只代表窗口创建，按钮可能尚未渲染完）
+    if qoder_latest_loaded() is None or (before_dt is not None and qoder_latest_loaded() <= before_dt):
+        end = time.time() + 10
+        while time.time() < end:
+            lt = qoder_latest_loaded()
+            if lt and (before_dt is None or lt > before_dt):
+                break
+            time.sleep(0.5)
+        time.sleep(0.8)  # 加载完成后稍缓冲，确保按钮可点
+
+    # 5) 定位黑色「领取」按钮：在裁剪区找最上方的深色连通域；未渲染出来则重试几次
     w = rect.right - rect.left
     h = rect.bottom - rect.top
     cx = int(w * 0.6557)
@@ -797,27 +815,32 @@ def do_qoder(force):
     crop_w = min(800, w - crop_x)
     crop_h = min(300, h - crop_y)
     clicked = False
-    try:
-        ww, hh, buf = capture_window(hwnd)
-        crop = bytearray(crop_w * crop_h * 4)
-        for yy in range(crop_h):
-            src = (crop_y + yy) * ww * 4
-            dst = yy * crop_w * 4
-            crop[dst:dst + crop_w * 4] = buf[src + crop_x * 4:src + (crop_x + crop_w) * 4]
-        blob = find_black_blob_center(crop_w, crop_h, crop, dark=70, min_area=2000)
-        if blob:
-            bx = crop_x + blob[0]
-            by = crop_y + blob[1]
-            click_abs(rect.left + bx, rect.top + by)
-            clicked = True
-            log(f"[Qoder CN] 定位到黑色按钮 @({bx},{by}) 并点击")
-    except Exception as e:
-        log(f"[Qoder CN] 截图定位失败: {e}")
+    blob = None
+    for _ in range(4):
+        try:
+            ww, hh, buf = capture_window(hwnd)
+            crop = bytearray(crop_w * crop_h * 4)
+            for yy in range(crop_h):
+                src = (crop_y + yy) * ww * 4
+                dst = yy * crop_w * 4
+                crop[dst:dst + crop_w * 4] = buf[src + crop_x * 4:src + (crop_x + crop_w) * 4]
+            blob = find_black_blob_center(crop_w, crop_h, crop, dark=70, min_area=2000)
+            if blob:
+                break
+        except Exception as e:
+            log(f"[Qoder CN] 截图定位失败: {e}")
+        time.sleep(1.5)
+    if blob:
+        bx = crop_x + blob[0]
+        by = crop_y + blob[1]
+        click_abs(rect.left + bx, rect.top + by)
+        clicked = True
+        log(f"[Qoder CN] 定位到黑色按钮 @({bx},{by}) 并点击")
     if not clicked:
         click_ratio(hwnd, 0.6557, 0.5672)
-        log("[Qoder CN] 用固定比例点击领取按钮")
+        log("[Qoder CN] 未定位到领取按钮，用固定比例点击")
 
-    # 5) 轮询日志确认 claimable true→false（领取成功）
+    # 6) 轮询日志确认 claimable true→false（领取成功）
     end = time.time() + 20
     while time.time() < end:
         if qoder_campaign_status() == "claimed":
