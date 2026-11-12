@@ -343,6 +343,21 @@ def capture_window(hwnd):
     return w, h, buf
 
 
+def window_rendered(hwnd, min_ratio=0.12):
+    """判断窗口是否已渲染出内容：被遮挡/未绘制时 PrintWindow 抓到的几乎全黑。"""
+    try:
+        w, h, buf = capture_window(hwnd)
+        lit = 0
+        total = 0
+        for i in range(0, w * h * 4, 128):  # 每 32 像素采样一次
+            if buf[i] or buf[i + 1] or buf[i + 2]:
+                lit += 1
+            total += 1
+        return total > 0 and (lit / total) >= min_ratio
+    except Exception:
+        return False
+
+
 def find_black_blob_center(crop_w, crop_h, buf, dark=70, min_area=300):
     """在裁剪缓冲里按从上到下顺序找第一个足够大的深色连通域。
     领取按钮位于「查看详情」上方，取最上方者即领取按钮。返回 (cx, cy, minx, miny, maxx, maxy) 或 None。"""
@@ -766,25 +781,40 @@ def do_qoder(force):
     if status == "none":
         log("[Qoder CN] 未获取到福利渠道信号，仍尝试打开权益中心")
 
-    restore(hwnd)
-
-    # 1) 左下角账号/设置入口 -> 打开菜单
-    click_ratio(hwnd, 0.0999, 0.9777)
-    time.sleep(1.5)
-    # 2) 菜单内「权益中心」
-    before = qoder_latest_surface()
-    before_dt = before[0] if before else None
-    click_ratio(hwnd, 0.0475, 0.6315)
-
-    # 3) 等待权益中心 surface 真正打开，并读取其 claimable 状态（比固定 sleep 可靠）
+    # 打开权益中心 surface：先确认窗口真正在前台且已渲染（被其他窗口遮挡时
+    # 屏幕坐标点击会落在别的窗口上、PrintWindow 也抓不到内容），失败则重试。
     claimable = None
-    end = time.time() + 20
-    while time.time() < end:
-        latest = qoder_latest_surface()
-        if latest and (before_dt is None or latest[0] > before_dt):
-            claimable = latest[1]
+    for attempt in range(4):
+        if attempt > 0:
+            # 收掉可能残留的菜单/弹窗，再给 UI 一点渲染时间
+            user32.keybd_event(0x1B, 0, 0, 0)
+            user32.keybd_event(0x1B, 0, 0x2, 0)
+            time.sleep(4)
+        # 前台化并校验渲染状态；冷启动/被遮挡时窗口内容尚未绘制，先等待重试
+        force_foreground(hwnd)
+        if not window_rendered(hwnd):
+            log(f"[Qoder CN] 第 {attempt + 1} 次尝试前窗口未渲染，重新前台化并等待")
+            time.sleep(3)
+            force_foreground(hwnd)
+            time.sleep(1.5)
+        # 1) 左下角账号/设置入口 -> 打开菜单
+        click_ratio(hwnd, 0.0999, 0.9777)
+        time.sleep(1.5)
+        # 2) 菜单内「权益中心」
+        before = qoder_latest_surface()
+        before_dt = before[0] if before else None
+        click_ratio(hwnd, 0.0475, 0.6315)
+        # 3) 等待 surface 真正打开并读取 claimable 状态
+        end = time.time() + 12
+        while time.time() < end:
+            latest = qoder_latest_surface()
+            if latest and (before_dt is None or latest[0] > before_dt):
+                claimable = latest[1]
+                break
+            time.sleep(1)
+        if claimable is not None:
             break
-        time.sleep(1)
+        log(f"[Qoder CN] 第 {attempt + 1} 次未打开权益中心 surface")
 
     if claimable is False:
         log("[Qoder CN] 权益中心显示今日已领取（claimable=false），跳过")
@@ -793,7 +823,7 @@ def do_qoder(force):
         return "already"
 
     if claimable is None:
-        log("[Qoder CN] 20 秒内未检测到权益中心 surface 打开，仍尝试像素定位领取")
+        log("[Qoder CN] 多次尝试仍未打开权益中心 surface，仍尝试像素定位领取")
 
     # 4) 等待 surface 真正加载完成（「已打开」只代表窗口创建，按钮可能尚未渲染完）
     if qoder_latest_loaded() is None or (before_dt is not None and qoder_latest_loaded() <= before_dt):

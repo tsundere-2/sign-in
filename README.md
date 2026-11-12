@@ -83,6 +83,7 @@ Unregister-ScheduledTask -TaskName "QiandaoAutoCheckin" -Confirm:$false
 - **窗口查找**（`find_main_window`）：允许隐藏到托盘的窗口，并跳过屏幕外占位窗口。
 - **前台化**（`force_foreground`）：临时置顶 + `AttachThreadInput` 绕过 Windows 前台锁，确保坐标点击落在目标窗口上（避免被其他窗口如抖音桌面版遮挡）。
 - **Qoder 领取按钮定位**：权益中心弹窗内有两个黑色按钮——「领取」（上）与「查看详情」（下），脚本取「最上方」的深色连通域，即领取按钮。
+- **Qoder 渲染校验**（`window_rendered`）：点击前先用 `PrintWindow` 抓一帧确认窗口已渲染出内容（被其他窗口遮挡或冷启动未绘制完成时几乎全黑），未渲染则重新前台化并等待重试，避免坐标点击落到别的窗口上。
 
 ## 常见问题
 
