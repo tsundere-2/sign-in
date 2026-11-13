@@ -781,22 +781,25 @@ def do_qoder(force):
     if status == "none":
         log("[Qoder CN] 未获取到福利渠道信号，仍尝试打开权益中心")
 
-    # 打开权益中心 surface：先确认窗口真正在前台且已渲染（被其他窗口遮挡时
-    # 屏幕坐标点击会落在别的窗口上、PrintWindow 也抓不到内容），失败则重试。
+    # 打开权益中心 surface：先等窗口真正渲染出内容（冷启动可能数十秒、窗口尺寸
+    # 会变），再点击；冷启动下 surface 打开也可能要 20 秒以上，故每次等待更久。
+    force_foreground(hwnd)
+    end = time.time() + 90
+    while time.time() < end and not window_rendered(hwnd):
+        time.sleep(3)
+        force_foreground(hwnd)
+    if not window_rendered(hwnd):
+        log("[Qoder CN] 90 秒内窗口仍未渲染，仍继续尝试点击")
+
     claimable = None
-    for attempt in range(4):
+    before_dt = None
+    for attempt in range(3):
         if attempt > 0:
             # 收掉可能残留的菜单/弹窗，再给 UI 一点渲染时间
             user32.keybd_event(0x1B, 0, 0, 0)
             user32.keybd_event(0x1B, 0, 0x2, 0)
             time.sleep(4)
-        # 前台化并校验渲染状态；冷启动/被遮挡时窗口内容尚未绘制，先等待重试
         force_foreground(hwnd)
-        if not window_rendered(hwnd):
-            log(f"[Qoder CN] 第 {attempt + 1} 次尝试前窗口未渲染，重新前台化并等待")
-            time.sleep(3)
-            force_foreground(hwnd)
-            time.sleep(1.5)
         # 1) 左下角账号/设置入口 -> 打开菜单
         click_ratio(hwnd, 0.0999, 0.9777)
         time.sleep(1.5)
@@ -804,8 +807,8 @@ def do_qoder(force):
         before = qoder_latest_surface()
         before_dt = before[0] if before else None
         click_ratio(hwnd, 0.0475, 0.6315)
-        # 3) 等待 surface 真正打开并读取 claimable 状态
-        end = time.time() + 12
+        # 3) 等待 surface 真正打开并读取 claimable 状态（冷启动下较慢）
+        end = time.time() + 25
         while time.time() < end:
             latest = qoder_latest_surface()
             if latest and (before_dt is None or latest[0] > before_dt):
@@ -835,20 +838,25 @@ def do_qoder(force):
             time.sleep(0.5)
         time.sleep(0.8)  # 加载完成后稍缓冲，确保按钮可点
 
-    # 5) 定位黑色「领取」按钮：在裁剪区找最上方的深色连通域；未渲染出来则重试几次
-    w = rect.right - rect.left
-    h = rect.bottom - rect.top
-    cx = int(w * 0.6557)
-    cy = int(h * 0.5672)
-    crop_x = max(0, cx - 400)
-    crop_y = max(0, cy - 150)
-    crop_w = min(800, w - crop_x)
-    crop_h = min(300, h - crop_y)
+    # 5) 定位黑色「领取」按钮：按实际抓取尺寸裁剪，找最上方的深色连通域；未渲染则重试
     clicked = False
     blob = None
+    crop_x = crop_y = crop_w = crop_h = 0
     for _ in range(4):
         try:
             ww, hh, buf = capture_window(hwnd)
+            if ww < 200 or hh < 200:
+                log(f"[Qoder CN] 窗口尺寸异常 {ww}x{hh}，等待后重试定位")
+                time.sleep(1.5)
+                continue
+            cx = int(ww * 0.6557)
+            cy = int(hh * 0.5672)
+            crop_x = max(0, cx - 400)
+            crop_y = max(0, cy - 150)
+            crop_w = min(800, ww - crop_x)
+            crop_h = min(300, hh - crop_y)
+            if crop_w < 10 or crop_h < 10:
+                continue
             crop = bytearray(crop_w * crop_h * 4)
             for yy in range(crop_h):
                 src = (crop_y + yy) * ww * 4
@@ -861,9 +869,11 @@ def do_qoder(force):
             log(f"[Qoder CN] 截图定位失败: {e}")
         time.sleep(1.5)
     if blob:
+        r2 = RECT()
+        user32.GetWindowRect(hwnd, ctypes.byref(r2))
         bx = crop_x + blob[0]
         by = crop_y + blob[1]
-        click_abs(rect.left + bx, rect.top + by)
+        click_abs(r2.left + bx, r2.top + by)
         clicked = True
         log(f"[Qoder CN] 定位到黑色按钮 @({bx},{by}) 并点击")
     if not clicked:
