@@ -489,7 +489,7 @@ def do_workbuddy(force):
         if not was_running:
             log("[WorkBuddy] 启动（--remote-debugging-port）...")
             launch(exe, ["--remote-debugging-port=" + str(port)])
-        if not wait_port(port, 60):
+        if not wait_port(port, 150):
             log("[WorkBuddy] CDP 端口未就绪")
             return "failed"
 
@@ -781,15 +781,19 @@ def do_qoder(force):
     if status == "none":
         log("[Qoder CN] 未获取到福利渠道信号，仍尝试打开权益中心")
 
-    # 打开权益中心 surface：先等窗口真正渲染出内容（冷启动可能数十秒、窗口尺寸
-    # 会变），再点击；冷启动下 surface 打开也可能要 20 秒以上，故每次等待更久。
-    force_foreground(hwnd)
-    end = time.time() + 90
-    while time.time() < end and not window_rendered(hwnd):
-        time.sleep(3)
+    # 打开权益中心 surface：冷启动/睡眠唤醒后 Qoder 主窗口可能先隐藏(0x0)再重建，
+    # 旧句柄会失效，因此等待期间要不断重新查找窗口；渲染完成后再点击。
+    end = time.time() + 120
+    while time.time() < end:
+        win2 = find_main_window(img)
+        if win2 is not None:
+            hwnd, rect = win2
         force_foreground(hwnd)
+        if window_rendered(hwnd):
+            break
+        time.sleep(3)
     if not window_rendered(hwnd):
-        log("[Qoder CN] 90 秒内窗口仍未渲染，仍继续尝试点击")
+        log("[Qoder CN] 120 秒内窗口仍未渲染，仍继续尝试点击")
 
     claimable = None
     before_dt = None
@@ -799,6 +803,10 @@ def do_qoder(force):
             user32.keybd_event(0x1B, 0, 0, 0)
             user32.keybd_event(0x1B, 0, 0x2, 0)
             time.sleep(4)
+        # 每次点击前重新获取窗口句柄，避免用到已失效的旧窗口
+        win2 = find_main_window(img)
+        if win2 is not None:
+            hwnd, rect = win2
         force_foreground(hwnd)
         # 1) 左下角账号/设置入口 -> 打开菜单
         click_ratio(hwnd, 0.0999, 0.9777)
@@ -839,6 +847,9 @@ def do_qoder(force):
         time.sleep(0.8)  # 加载完成后稍缓冲，确保按钮可点
 
     # 5) 定位黑色「领取」按钮：按实际抓取尺寸裁剪，找最上方的深色连通域；未渲染则重试
+    win2 = find_main_window(img)
+    if win2 is not None:
+        hwnd, rect = win2
     clicked = False
     blob = None
     crop_x = crop_y = crop_w = crop_h = 0
