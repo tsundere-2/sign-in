@@ -560,8 +560,17 @@ def do_trae(force):
             log("[TRAE CN] 启动（--remote-debugging-port）...")
             launch(exe, ["--remote-debugging-port=" + str(port)])
         if not wait_port(port, 60):
-            log("[TRAE CN] CDP 端口未就绪")
-            return "failed"
+            # TRAE 已在运行但未开 CDP 端口（手动启动/更新自重启），单实例应用会忽略
+            # 后续 launch 的调试参数，必须杀掉后带端口重启才能控制。
+            if was_running:
+                log("[TRAE CN] 已运行但 CDP 端口未开启，重启以启用调试端口")
+                kill_proc(img)
+                time.sleep(2)
+                launch(exe, ["--remote-debugging-port=" + str(port)])
+                was_running = False
+            if not wait_port(port, 60):
+                log("[TRAE CN] CDP 端口未就绪")
+                return "failed"
 
         user_check_js = (
             "(()=>{let el=null;(function walk(r){let els;try{els=r.querySelectorAll('*')}catch(e){return}"
