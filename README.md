@@ -24,6 +24,24 @@ sign in/
     └── checkin.log     # 运行日志
 ```
 
+## 版本管理（Git）
+
+仓库已初始化，远端为 `origin`（GitHub）。运行期生成的文件已由 `.gitignore` 排除，不会误提交：
+
+- `state.json`（每日已签状态）
+- `logs/`（运行日志）
+- `__pycache__/`、`*.pyc`
+- `.workbuddy/`（WorkBuddy 本地缓存）
+
+日常更新：
+
+```powershell
+cd "D:\qiandao\sign in"
+git add checkin.py README.md    # 或 git add -A
+git commit -m "描述本次改动"
+git push
+```
+
 ## 环境要求
 
 - Windows 10/11
@@ -84,6 +102,7 @@ Unregister-ScheduledTask -TaskName "QiandaoAutoCheckin" -Confirm:$false
 - **前台化**（`force_foreground`）：临时置顶 + `AttachThreadInput` 绕过 Windows 前台锁，确保坐标点击落在目标窗口上（避免被其他窗口如抖音桌面版遮挡）。
 - **Qoder 领取按钮定位**：权益中心弹窗内有两个黑色按钮——「领取」（上）与「查看详情」（下），脚本取「最上方」的深色连通域，即领取按钮。
 - **Qoder 渲染校验**（`window_rendered`）：点击前先用 `PrintWindow` 抓一帧确认窗口已渲染出内容（被其他窗口遮挡或冷启动未绘制完成时几乎全黑），未渲染则重新前台化并等待重试，避免坐标点击落到别的窗口上。
+- **TRAE 账号入口**：通过 CDP 在页面上查找 `BUTTON.accountTrigger-*`（底部账号按钮，类名带哈希后缀，用前缀匹配），点击后菜单内的「签到」按钮为 `BUTTON.accountCheckinButton-*`，文本「签到」/「已签到」区分未签与已签。
 
 ## 常见问题
 

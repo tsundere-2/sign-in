@@ -165,10 +165,12 @@ def proc_running(substr):
 
 def kill_proc(image):
     try:
-        subprocess.run(["taskkill", "/IM", image, "/F"],
-                       capture_output=True, timeout=20)
-    except Exception:
-        pass
+        r = subprocess.run(["taskkill", "/IM", image, "/F", "/T"],
+                           capture_output=True, timeout=20)
+        if r.returncode != 0:
+            log(f"[kill] taskkill {image} 返回码 {r.returncode}")
+    except Exception as e:
+        log(f"[kill] taskkill {image} 异常: {e}")
 
 
 def launch(exe, args=None, cwd=None):
@@ -575,20 +577,23 @@ def do_trae(force):
         user_check_js = (
             "(()=>{let el=null;(function walk(r){let els;try{els=r.querySelectorAll('*')}catch(e){return}"
             "for(const e of els){if(e.shadowRoot)walk(e.shadowRoot);"
-            "if(!el&&e.childElementCount===0&&/^用户\\d+$/.test((e.textContent||'').trim()))el=e}})(document);"
+            "if(!el&&e.tagName==='BUTTON'&&((e.className||'').toString().includes('accountTrigger')))el=e}})(document);"
             "return el?'FOUND':'NO_USER'})()"
         )
         open_user_js = (
-            "(()=>{let el=null;(function walk(r){let els;try{els=r.querySelectorAll('*')}catch(e){return}"
+            "(()=>{let trig=null,checkin=null;(function walk(r){let els;try{els=r.querySelectorAll('*')}catch(e){return}"
             "for(const e of els){if(e.shadowRoot)walk(e.shadowRoot);"
-            "if(!el&&e.childElementCount===0&&/^用户\\d+$/.test((e.textContent||'').trim()))el=e}})(document);"
-            "if(!el)return 'NO_USER';el.click();return 'CLICKED_USER'})()"
+            "const c=(e.className||'').toString();"
+            "if(!trig&&e.tagName==='BUTTON'&&c.includes('accountTrigger'))trig=e;"
+            "if(!checkin&&e.tagName==='BUTTON'&&c.includes('accountCheckinButton'))checkin=e}})(document);"
+            "if(checkin)return 'ALREADY_OPEN';if(!trig)return 'NO_USER';trig.click();return 'CLICKED_USER'})()"
         )
         claim_js = (
-            "(()=>{let done=null,claim=null;(function walk(r){let els;try{els=r.querySelectorAll('*')}catch(e){return}"
-            "for(const e of els){if(e.shadowRoot)walk(e.shadowRoot);if(e.childElementCount!==0)continue;"
-            "const t=(e.textContent||'').trim();if(t==='已签到'&&!done)done=e;else if(t==='签到'&&!claim)claim=e}})(document);"
-            "if(done)return 'ALREADY';if(!claim)return 'NO_BUTTON';claim.click();return 'CLICKED'})()"
+            "(()=>{let btn=null;(function walk(r){let els;try{els=r.querySelectorAll('*')}catch(e){return}"
+            "for(const e of els){if(e.shadowRoot)walk(e.shadowRoot);"
+            "if(!btn&&e.tagName==='BUTTON'&&((e.className||'').toString().includes('accountCheckinButton')))btn=e}})(document);"
+            "if(!btn)return 'NO_BUTTON';const t=(btn.textContent||'').trim();"
+            "if(t.includes('已签'))return 'ALREADY';btn.click();return 'CLICKED'})()"
         )
 
         # 1) 等界面加载出账号入口
@@ -596,9 +601,9 @@ def do_trae(force):
         if not hit:
             log(f"[TRAE CN] 45 秒内未找到账号入口: {out}")
             return "failed"
-        # 2) 打开账号菜单
+        # 2) 打开账号菜单（已打开则跳过，避免再点一次把菜单切换回关闭）
         out, _ = cdp_eval(open_user_js, port)
-        if out != "CLICKED_USER":
+        if out not in ("CLICKED_USER", "ALREADY_OPEN"):
             log(f"[TRAE CN] 打开账号菜单失败: {out}")
             return "failed"
         time.sleep(1.5)
@@ -725,7 +730,7 @@ def qoder_exe():
     return cands[-1][1]
 
 
-def do_qoder(force):
+def _do_qoder(force):
     key = "qoder"
     img = "Qoder CN.exe"
     st = load_state()
@@ -912,6 +917,27 @@ def do_qoder(force):
 
     log("[Qoder CN] 20 秒内未确认到领取成功")
     return "failed"
+
+
+def do_qoder(force):
+    """Qoder 签到包装：结束后清理进程不残留。
+
+    清理条件：脚本本次启动的客户端，或原本隐藏在托盘/最小化被脚本唤起的
+    （此时用户并未在可见窗口使用）。若用户已把 Qoder 前台打开，则不打扰。
+    """
+    img = "Qoder CN.exe"
+    was_running = proc_running(img)
+    was_visible = find_main_window(img) is not None
+    try:
+        return _do_qoder(force)
+    finally:
+        if not was_running or not was_visible:
+            kill_proc(img)
+            time.sleep(1)
+            if proc_running(img):
+                log("[Qoder CN] 进程仍在，重试清理")
+                kill_proc(img)
+                time.sleep(1)
 
 
 PLATFORMS = {
